@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
 // Initialize Firebase Admin SDK
-const serviceAccount = require('./service.json'); // Replace with your service account file path
+const serviceAccount = require('./etc/secrets/service.json'); // Replace with your service account file path
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
 });
