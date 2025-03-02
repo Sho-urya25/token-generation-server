@@ -1,142 +1,34 @@
-// const express = require('express');
-// const jwt = require('jsonwebtoken');
-// const uuid4 = require('uuid4');
-// const admin = require('firebase-admin');
-// require('dotenv').config();
-
-// const app = express();
-// const PORT = process.env.PORT || 3000;
-
-// // Middleware to parse JSON
-// app.use(express.json());
-
-// // Initialize Firebase Admin SDK
-// const serviceAccount = require('/etc/secrets/service.json'); // Replace with your service account file path
-// admin.initializeApp({
-//     credential: admin.credential.cert(serviceAccount)
-// });
-
-// // Environment variables for secrets (replace with your actual values or use environment variables)
-// const APP_ACCESS_KEY = process.env.APP_ACCESS_KEY || '<app_access_key>';
-// const APP_SECRET = process.env.APP_SECRET || '<app_secret>';
-
-// // Middleware to verify Firebase ID token
-// const authenticateFirebaseToken = async (req, res, next) => {
-//     const idToken = req.headers.authorization?.split('Bearer ')[1];
-
-//     if (!idToken) {
-//         return res.status(401).json({ error: 'Unauthorized: No token provided' });
-//     }
-
-//     try {
-//         // Verify the ID token
-//         const decodedToken = await admin.auth().verifyIdToken(idToken);
-//         req.user = decodedToken; // Attach user info to the request object
-//         next(); // Proceed to the next middleware/route handler
-//     } catch (error) {
-//         console.error('Error verifying Firebase ID token:', error);
-//         return res.status(401).json({ error: 'Unauthorized: Invalid token' });
-//     }
-// };
-
-// // Route to generate a management token
-// app.post('/generate-management-token', authenticateFirebaseToken, (req, res) => {
-//     const payload = {
-//         access_key: APP_ACCESS_KEY,
-//         type: 'management',
-//         version: 2,
-//         iat: Math.floor(Date.now() / 1000),
-//         nbf: Math.floor(Date.now() / 1000)
-//     };
-
-//     jwt.sign(
-//         payload,
-//         APP_SECRET,
-//         {
-//             algorithm: 'HS256',
-//             expiresIn: '24h',
-//             jwtid: uuid4()
-//         },
-//         function (err, token) {
-//             if (err) {
-//                 return res.status(500).json({ error: 'Token generation failed' });
-//             }
-//             res.json({ token });
-//         }
-//     );
-// });
-
-// // Route to generate an app-specific token (e.g., for joining a room)
-// app.post('/generate-app-token', authenticateFirebaseToken, (req, res) => {
-//     const { roomId, userId, role } = req.body;
-
-//     if (!roomId || !userId || !role) {
-//         return res.status(400).json({ error: 'roomId, userId, and role are required' });
-//     }
-
-//     const payload = {
-//         access_key: APP_ACCESS_KEY,
-//         room_id: roomId,
-//         user_id: userId,
-//         role: role,
-//         type: 'app',
-//         version: 2,
-//         iat: Math.floor(Date.now() / 1000),
-//         nbf: Math.floor(Date.now() / 1000)
-//     };
-
-//     jwt.sign(
-//         payload,
-//         APP_SECRET,
-//         {
-//             algorithm: 'HS256',
-//             expiresIn: '24h',
-//             jwtid: uuid4()
-//         },
-//         function (err, token) {
-//             if (err) {
-//                 return res.status(500).json({ error: 'Token generation failed' });
-//             }
-//             res.json({ token });
-//         }
-//     );
-// });
-
-// // Health check route
-// app.get('/', (req, res) => {
-//     res.send('Token Generation Server is running!');
-// });
-
-// // Start the server
-// app.listen(PORT, () => {
-//     console.log(`Server is running on port ${PORT}`);
-// });
-
-
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const axios = require('axios'); // To make HTTP requests to 100ms API
 require('dotenv').config();
-const admin = require('firebase-admin');
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { getAuth } = require('firebase-admin/auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
+var decodedToken;
 // Middleware to parse JSON
 app.use(express.json());
 
 // Initialize Firebase Admin SDK
-const serviceAccount = require('/etc/secrets/service.json'); // Replace with your service account file path
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+const serviceAccount = require('./service.json'); // Replace with your service account file path
+const uuid4 = require('uuid4');
+initializeApp({
+    credential: cert(serviceAccount),
 });
+const MAX_PARTICIPANTS  = 2;
+const db = getFirestore(); // Use Firestore for room management
 
-const db = admin.firestore(); // Use Firestore for room management
+// Environment variables for secrets
+const APP_SECRET = process.env.APP_SECRET;
+const API_KEY = process.env.API_KEY;
 
-// Environment variables for secrets (replace with your actual values or use environment variables)
-const APP_ACCESS_KEY = process.env.APP_ACCESS_KEY || '<app_access_key>';
-const APP_SECRET = process.env.APP_SECRET || '<app_secret>';
-const HMS_TEMPLATE_ID = process.env.HMS_TEMPLATE_ID || '<template_id>';
+if (!APP_SECRET || !API_KEY) {
+    console.error("Missing API_KEY or APP_SECRET in environment variables");
+    process.exit(1);
+}
 
 // Middleware to verify Firebase ID token
 const authenticateFirebaseToken = async (req, res, next) => {
@@ -145,10 +37,9 @@ const authenticateFirebaseToken = async (req, res, next) => {
         return res.status(401).json({ error: 'Unauthorized: No token provided' });
     }
     try {
-        // Verify the ID token
-        const decodedToken = await admin.auth().verifyIdToken(idToken);
+         decodedToken = await getAuth().verifyIdToken(idToken);
         req.user = decodedToken; // Attach user info to the request object
-        next(); // Proceed to the next middleware/route handler
+        next();
     } catch (error) {
         console.error('Error verifying Firebase ID token:', error);
         return res.status(401).json({ error: 'Unauthorized: Invalid token' });
@@ -156,134 +47,245 @@ const authenticateFirebaseToken = async (req, res, next) => {
 };
 
 // Function to generate a management token
-const generateManagementToken = () => {
+const generateToken = () => {
+    const options = { expiresIn: '120m', algorithm: 'HS256' };
+var roomId = uuid4();
     const payload = {
-        access_key: APP_ACCESS_KEY,
-        type: 'management',
-        version: 2,
-        iat: Math.floor(Date.now() / 1000),
-        nbf: Math.floor(Date.now() / 1000)
+        apikey: API_KEY,
+        permissions: ["allow_join"], 
+        version:2,
+        roomId:roomId,
+        participantId:decodedToken.uid,
+        roles: ['crawler']
+        // Adjust permissions as needed
+
     };
-    return jwt.sign(payload, APP_SECRET, { algorithm: 'HS256', expiresIn: '24h' });
+    const token = jwt.sign(payload, APP_SECRET, options);
+    console.log("Generated Management Token:", token);
+    return token;
 };
 
 // Function to create a new room using 100ms API
-const createHMSRoom = async () => {
-    const managementToken = generateManagementToken();
-
+const createRoom = async (token) => {
     try {
         const response = await axios.post(
-            'https://api.100ms.live/v2/rooms',
-            {
-                name: `room-${Date.now()}`,
-                description: 'Random video chat room',
-                template_id: HMS_TEMPLATE_ID
-            },
+            'https://api.videosdk.live/v2/rooms',
+            {}, // Empty body since we're not providing customRoomId
             {
                 headers: {
-                    Authorization: `Bearer ${managementToken}`,
-                    'Content-Type': 'application/json'
-                }
+                    Authorization: token,
+                    'Content-Type': 'application/json',
+                },
             }
         );
-        return response.data.id; // Return the room ID
+        console.log("Room Creation Response:", response.data);
+        return response.data.roomId; // Assuming the API returns roomId in the response
     } catch (error) {
-        console.error('Error creating 100ms room:', error.response?.data || error.message);
-        throw new Error('Failed to create 100ms room');
+        console.error('Error creating room:', error.response?.data || error.message);
+        throw new Error('Failed to create room');
     }
 };
 
-// Route to generate an app-specific token
-app.post('/generate-app-token', authenticateFirebaseToken, async (req, res) => {
+// Route to generate an app-specific token and create a room
+app.post('/join-randomroom', authenticateFirebaseToken, async (req, res) => {
     const userId = req.user.uid; // Extract user ID from Firebase token
     const roomsRef = db.collection('rooms');
+    const MAX_PARTICIPANTS = 4; // Maximum number of participants per room
 
     try {
-        // Find an available room with one participant
-        const availableRoomSnapshot = await roomsRef
-            .where('isFull', '==', false)
-            .limit(1)
-            .get();
+        // Step 1: Check if the user is already in any room
+        const allRoomsQuery = await roomsRef.get();
 
-        let roomID;
+        for (const roomDoc of allRoomsQuery.docs) {
+            const roomData = roomDoc.data();
 
-        if (!availableRoomSnapshot.empty) {
-            // Join an existing room
-            const roomDoc = availableRoomSnapshot.docs[0];
-            roomID = roomDoc.id;
+            // If the user is already in a room, prevent them from joining another
+            if (roomData.participants.includes(userId)) {
+                console.log(`User ${userId} is already in room ${roomDoc.id}. Cannot join another room.`);
+                return res.status(400).json({ error: 'You are already in another room. Please leave the current room before joining a new one.' });
+            }
+        }
 
-            await roomDoc.ref.update({
-                participants: admin.firestore.FieldValue.arrayUnion(userId),
-                isFull: true
-            });
-        } else {
-            // Create a new room using 100ms API
-            roomID = await createHMSRoom();
+        // Step 2: Generate a management token
+        const token = generateToken();
+        console.log("Generated Management Token:", token);
+
+        // Step 3: Fetch all available rooms that are not full
+        const availableRoomsQuery = await roomsRef.where('isFull', '==', false).get();
+
+        let roomId;
+
+        if (!availableRoomsQuery.empty) {
+            // Iterate through available rooms to find one where the user is not already a participant
+            for (const roomDoc of availableRoomsQuery.docs) {
+                const roomData = roomDoc.data();
+
+                // Use a transaction to safely update the room's participants
+                try {
+                    await db.runTransaction(async (transaction) => {
+                        const roomSnapshot = await transaction.get(roomDoc.ref);
+                        const roomData = roomSnapshot.data();
+
+                        // Double-check if the room became full during the transaction
+                        if (roomData.isFull) {
+                            throw new Error("Room became full during transaction.");
+                        }
+
+                        // Add the user to the participants list
+                        const updatedParticipants = [...new Set([...roomData.participants, userId])]; // Prevent duplicates
+                        const isFull = updatedParticipants.length >= MAX_PARTICIPANTS;
+
+                        transaction.update(roomDoc.ref, {
+                            participants: updatedParticipants,
+                            isFull: isFull,
+                        });
+                    });
+
+                    roomId = roomDoc.id;
+                    console.log(`User ${userId} joined existing room ${roomId}`);
+                    break; // Exit the loop once a suitable room is found
+                } catch (transactionError) {
+                    console.warn(`Failed to join room ${roomDoc.id}: ${transactionError.message}`);
+                    continue; // Try the next room
+                }
+            }
+        }
+
+        // Step 4: If no suitable room was found, create a new room
+        if (!roomId) {
+            roomId = await createRoom(token);
 
             // Store the new room in Firestore
-            await roomsRef.doc(roomID).set({
+            await roomsRef.doc(roomId).set({
                 participants: [userId],
                 isFull: false,
-                createdAt: admin.firestore.FieldValue.serverTimestamp()
+                createdAt: FieldValue.serverTimestamp(),
             });
+
+            console.log(`Created new room ${roomId} for user ${userId}`);
         }
 
-        // Generate an app-specific token for the user
-        const payload = {
-            access_key: APP_ACCESS_KEY,
-            room_id: roomID,
-            user_id: userId,
-            role: 'host', // Default role, change as needed
-            type: 'app',
-            version: 2,
-            iat: Math.floor(Date.now() / 1000),
-            nbf: Math.floor(Date.now() / 1000)
-        };
+        // Step 5: Return the app-specific token, room ID, and participant list
+        const roomSnapshot = await roomsRef.doc(roomId).get();
+        const roomData = roomSnapshot.data();
 
-        const appToken = jwt.sign(payload, APP_SECRET, { algorithm: 'HS256', expiresIn: '24h' });
+        // Validate room data structure
+        if (!roomData || !Array.isArray(roomData.participants)) {
+            throw new Error("Invalid room data structure.");
+        }
 
-        // Return both the app-specific token and room ID
-        res.json({ token: appToken, roomID: roomID });
+        res.json({
+            token,
+            roomID: roomId,
+            participants: roomData.participants,
+        });
     } catch (error) {
-        console.error('Error generating app token:', error);
-        res.status(500).json({ error: 'Failed to generate app token' });
+        console.error('Error joining or creating room:', error.message || error);
+
+        // Handle specific errors for better debugging
+        if (error.message === "Invalid room data structure.") {
+            res.status(500).json({ error: 'Unexpected database error. Please try again later.' });
+        } else {
+            res.status(500).json({ error: 'Failed to join or create room', details: error.message });
+        }
     }
 });
-
-// Route to leave a room
 app.post('/leave-room', authenticateFirebaseToken, async (req, res) => {
-    const { roomId, userId } = req.body;
+    const userId = req.user.uid; // Extract user ID from Firebase token
+    const { roomId } = req.body; // Room ID provided by the client
 
-    if (!roomId || !userId) {
-        return res.status(400).json({ error: 'roomId and userId are required' });
+    if (!roomId) {
+        return res.status(400).json({ error: 'Room ID is required.' });
     }
+
+    const roomsRef = db.collection('rooms');
+    const roomDocRef = roomsRef.doc(roomId);
 
     try {
-        const roomRef = db.collection('rooms').doc(roomId);
-        const roomDoc = await roomRef.get();
-
-        if (!roomDoc.exists) {
-            return res.status(404).json({ error: 'Room not found' });
+        // Fetch the room document
+        const roomSnapshot = await roomDocRef.get();
+        if (!roomSnapshot.exists) {
+            return res.status(404).json({ error: 'Room not found.' });
         }
 
-        const roomData = roomDoc.data();
+        const roomData = roomSnapshot.data();
 
-        // Remove the user from the room's participants list
-        await roomRef.update({
-            participants: admin.firestore.FieldValue.arrayRemove(userId)
+        // Check if the user is in the room's participants list
+        if (!roomData.participants.includes(userId)) {
+            return res.status(400).json({ error: 'You are not in this room.' });
+        }
+
+        // Use a transaction to safely update the room's participants
+        await db.runTransaction(async (transaction) => {
+            const roomSnapshot = await transaction.get(roomDocRef);
+            const roomData = roomSnapshot.data();
+
+            // Remove the user from the participants list
+            const updatedParticipants = roomData.participants.filter(participant => participant !== userId);
+
+            // Update the room state
+            if (updatedParticipants.length === 0) {
+                // Option 1: Delete the room if it becomes empty
+                await transaction.delete(roomDocRef);
+                console.log(`Room ${roomId} deleted because it became empty.`);
+            } else {
+                // Option 2: Update the room with the new participants list
+                transaction.update(roomDocRef, {
+                    participants: updatedParticipants,
+                    isFull: false, // Room cannot be full if a user leaves
+                });
+                console.log(`User ${userId} left room ${roomId}. Updated participants:`, updatedParticipants);
+            }
         });
 
-        // If no participants are left, delete the room
-        if (roomData.participants.length === 1) {
-            await roomRef.delete();
-        }
-
-        res.json({ message: 'User successfully left the room' });
+        res.json({
+            message: 'You have successfully left the room.',
+            roomID: roomId,
+        });
     } catch (error) {
-        console.error('Error leaving room:', error);
-        res.status(500).json({ error: 'Failed to leave room' });
+        console.error('Error leaving room:', error.message || error);
+        res.status(500).json({ error: 'Failed to leave the room.', details: error.message });
     }
 });
+// app.post('/join-randomeroom', authenticateFirebaseToken, async (req, res) => {
+//     const userId = req.user.uid; // Extract user ID from Firebase token
+//     const roomsRef = db.collection('rooms');
+
+//     try {
+//         // Generate a management token
+//         const token = generateToken();
+//         console.log("Generated Management Token:", token);
+
+//         // Verify the management token (optional but useful for debugging)
+//         try {
+//             jwt.verify(token, APP_SECRET, { algorithms: ["HS256"] });
+//             console.log("✅ Management Token is valid.");
+//         } catch (error) {
+//             console.error("❌ Invalid Management Token:", error.message);
+//             throw new Error("Invalid management token");
+//         }
+
+//         // Create a new room using the 100ms API
+//         const roomId = await createRoom(token);
+
+//         // Log the roomId and userId before storing in Firestore
+//         console.log("Storing room in Firestore:", { roomId, userId });
+
+//         // Store the new room in Firestore
+//         await roomsRef.doc(roomId).set({
+//             participants: [userId],
+//             isFull: false,
+//             createdAt: FieldValue.serverTimestamp(),
+//         });
+
+//         // Return both the app-specific token and room ID
+//         res.json({ token, roomID: roomId });
+//     } catch (error) {
+//         console.error('Error generating app token or creating room:', error);
+//         res.status(500).json({ error: 'Failed to generate app token or create room' });
+//     }
+// });
+
 
 // Health check route
 app.get('/', (req, res) => {
