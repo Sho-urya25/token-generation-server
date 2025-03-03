@@ -47,7 +47,7 @@ const authenticateFirebaseToken = async (req, res, next) => {
 };
 
 // Function to generate a management token
-const generateToken = () => {
+const generateRoomToken = () => {
     const options = { expiresIn: '120m', algorithm: 'HS256' };
 var roomId = uuid4();
     const payload = {
@@ -102,12 +102,12 @@ app.post('/join-randomroom', authenticateFirebaseToken, async (req, res) => {
             // If the user is already in a room, prevent them from joining another
             if (roomData.participants.includes(userId)) {
                 console.log(`User ${userId} is already in room ${roomDoc.id}. Cannot join another room.`);
-                return res.status(400).json({ error: 'You are already in another room. Please leave the current room before joining a new one.' });
+                return res.status(400).json({ roomid: roomDoc.id,error: 'You are already in another room. Please leave the current room before joining a new one.' });
             }
         }
 
         // Step 2: Generate a management token
-        const token = generateToken();
+        const token = generateRoomToken();
         console.log("Generated Management Token:", token);
 
         // Step 3: Fetch all available rooms that are not full
@@ -175,7 +175,6 @@ app.post('/join-randomroom', authenticateFirebaseToken, async (req, res) => {
         }
 
         res.json({
-            token,
             roomID: roomId,
             participants: roomData.participants,
         });
@@ -247,44 +246,34 @@ app.post('/leave-room', authenticateFirebaseToken, async (req, res) => {
         res.status(500).json({ error: 'Failed to leave the room.', details: error.message });
     }
 });
-// app.post('/join-randomeroom', authenticateFirebaseToken, async (req, res) => {
-//     const userId = req.user.uid; // Extract user ID from Firebase token
-//     const roomsRef = db.collection('rooms');
+const generateParticipantToken = (roomId, userId) => {
+    const options = { expiresIn: '30m', algorithm: 'HS256' };
+    const payload = {
+        apikey: API_KEY,
+        permissions: ["allow_join"], // Adjust permissions as needed
+        version: 2,
+        roomId: roomId,
+        participantId: userId,
+        roles: ['rtc']
+    };
+    const token = jwt.sign(payload, APP_SECRET, options);
+    console.log("Generated Participant Token:", token);
+    return token;
+}
 
-//     try {
-//         // Generate a management token
-//         const token = generateToken();
-//         console.log("Generated Management Token:", token);
+app.get('/get-room-token/:roomId', authenticateFirebaseToken, async (req, res) => {
+    const userId = req.user.uid; // Extract user ID from Firebase token)
+    const roomId = req.params.roomId;
+    if (!roomId) {
+        return res.status(400).json({ error: 'Room ID is required.' });
+    }
+    
+        const token = generateParticipantToken(roomId, userId);
+        console.log("Generated Participant Token:", token);
+        res.json({ token: token });
 
-//         // Verify the management token (optional but useful for debugging)
-//         try {
-//             jwt.verify(token, APP_SECRET, { algorithms: ["HS256"] });
-//             console.log("✅ Management Token is valid.");
-//         } catch (error) {
-//             console.error("❌ Invalid Management Token:", error.message);
-//             throw new Error("Invalid management token");
-//         }
+});
 
-//         // Create a new room using the 100ms API
-//         const roomId = await createRoom(token);
-
-//         // Log the roomId and userId before storing in Firestore
-//         console.log("Storing room in Firestore:", { roomId, userId });
-
-//         // Store the new room in Firestore
-//         await roomsRef.doc(roomId).set({
-//             participants: [userId],
-//             isFull: false,
-//             createdAt: FieldValue.serverTimestamp(),
-//         });
-
-//         // Return both the app-specific token and room ID
-//         res.json({ token, roomID: roomId });
-//     } catch (error) {
-//         console.error('Error generating app token or creating room:', error);
-//         res.status(500).json({ error: 'Failed to generate app token or create room' });
-//     }
-// });
 
 
 // Health check route
