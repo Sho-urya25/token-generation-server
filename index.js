@@ -252,6 +252,33 @@ app.post('/leave-room', authenticateFirebaseToken, async (req, res) => {
         res.status(500).json({ error: 'Failed to leave the room.', details: error.message });
     }
 });
+
+app.get('/get-room', authenticateFirebaseToken, async (req, res) => {
+    const userId = req.user.uid; // Extract user ID from Firebase token
+    try {
+        const roomsRef = db.collection('rooms');
+        const allRoomsQuery = await roomsRef.get();
+
+        let userRoom = null;
+
+        // Iterate through all rooms to find the one where the user is a participant
+        allRoomsQuery.forEach(roomDoc => {
+            const roomData = roomDoc.data();
+            if (roomData.participants.includes(userId)) {
+                userRoom = { id: roomDoc.id, ...roomData };
+            }
+        });
+
+        if (userRoom) {
+            res.json(userRoom);
+        } else {
+            res.status(404).json({ error: 'User is not in any room' });
+        }
+    } catch (error) {
+        console.error('Error fetching rooms:', error);
+        res.status(500).json({ error: 'Failed to fetch rooms', details: error.message });
+    }
+});
 const generateParticipantToken = (roomId, userId) => {
     const options = { expiresIn: '30m', algorithm: 'HS256' };
     const payload = {
