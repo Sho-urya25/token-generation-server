@@ -174,9 +174,12 @@ app.post('/join-randomroom', authenticateFirebaseToken, async (req, res) => {
             throw new Error("Invalid room data structure.");
         }
 
+        const participentToken = generateParticipantToken(roomId, userId);
+
         res.json({
             roomID: roomId,
             participants: roomData.participants,
+            token: participentToken,
         });
     } catch (error) {
         console.error('Error joining or creating room:', error.message || error);
@@ -236,10 +239,13 @@ app.post('/leave-room', authenticateFirebaseToken, async (req, res) => {
                 console.log(`User ${userId} left room ${roomId}. Updated participants:`, updatedParticipants);
             }
         });
+        
 
         res.json({
             message: 'You have successfully left the room.',
+            success: true,
             roomID: roomId,
+           
         });
     } catch (error) {
         console.error('Error leaving room:', error.message || error);
@@ -260,19 +266,6 @@ const generateParticipantToken = (roomId, userId) => {
     console.log("Generated Participant Token:", token);
     return token;
 }
-
-app.get('/get-room-token/:roomId', authenticateFirebaseToken, async (req, res) => {
-    const userId = req.user.uid; // Extract user ID from Firebase token)
-    const roomId = req.params.roomId;
-    if (!roomId) {
-        return res.status(400).json({ error: 'Room ID is required.' });
-    }
-    
-        const token = generateParticipantToken(roomId, userId);
-        console.log("Generated Participant Token:", token);
-        res.json({ token: token });
-
-});
 
 
 
